@@ -5,8 +5,23 @@ import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import * as log from "../utils/logger.js";
 
-// Mutex to prevent race conditions during account selection
-let selectionMutex = Promise.resolve();
+// Per-provider mutex map — concurrent sessions for different providers can run in parallel
+const selectionMutexes = new Map();
+
+/**
+ * Lazy-init per-provider mutex entry so concurrent sessions targeting
+ * different providers can run in parallel.
+ * @param {string} providerId
+ * @returns {{ promise: Promise<void>, resolve: (() => void)|null }}
+ */
+function getProviderSelectionMutex(providerId) {
+  let entry = selectionMutexes.get(providerId);
+  if (!entry) {
+    entry = { promise: Promise.resolve(), resolve: null };
+    selectionMutexes.set(providerId, entry);
+  }
+  return entry;
+}
 
 /**
  * Get provider credentials from localDb
@@ -21,16 +36,17 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     ? excludeConnectionIds
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
-  // Acquire mutex to prevent race conditions
-  const currentMutex = selectionMutex;
-  let resolveMutex;
-  selectionMutex = new Promise(resolve => { resolveMutex = resolve; });
+  const providerId = resolveProviderId(provider);
+
+  // Acquire per-provider mutex
+  const entry = getProviderSelectionMutex(providerId);
+  const current = entry.promise;
+  let resolveMutex = entry.resolve;
+  const nextPromise = new Promise(res => (resolveMutex = res));
+  entry.promise = nextPromise;
 
   try {
-    await currentMutex;
-
-    // Resolve alias to provider ID (e.g., "kc" -> "kilocode")
-    const providerId = resolveProviderId(provider);
+    await current;
 
     // Inject a virtual connection for no-auth free providers (with optional proxy pool from settings)
     if (FREE_PROVIDERS[providerId]?.noAuth) {
