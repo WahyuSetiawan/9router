@@ -7,6 +7,8 @@ import { CODEX_REVIEW_SUFFIX } from "../providers/models/helpers.js";
 
 export { PROVIDER_MODELS };
 
+// Debug: optional cache logging (only when DEBUG_CACHE env is set)
+const DEBUG_CACHE = typeof process !== "undefined" && process.env.DEBUG_CACHE;
 
 // Helper functions
 export function getProviderModels(aliasOrId) {
@@ -23,16 +25,39 @@ export function getDefaultModel(aliasOrId) {
 // digit-hyphen-digit to digit-dot-digit before lookup. Other providers are left untouched.
 const DOT_VERSION_PROVIDERS = new Set(["kr", "kiro"]);
 
+const MAX_FINDMODEL_ENTRIES = 5000;
+const _findModelCache = new Map();
+
+function cacheFindModel(key, value) {
+  if (_findModelCache.size >= MAX_FINDMODEL_ENTRIES) {
+    _findModelCache.clear();  // Static data — fast repopulate
+  }
+  _findModelCache.set(key, value ?? null);
+}
+
 // Find a registry entry by id. For Kiro models, tolerates dash/dot version separators
 // ("claude-sonnet-4-5" ~= "claude-sonnet-4.5"). Other providers use exact match only.
 function findModel(models, modelId, aliasOrId) {
   if (!models) return undefined;
+  const key = `${aliasOrId}:${modelId}`;
+  const cached = _findModelCache.get(key);
+  if (cached !== undefined) {
+    if (DEBUG_CACHE) process.stderr.write(`[cache] findModel ${key} → HIT\n`);
+    return cached || undefined;
+  }
+  if (DEBUG_CACHE) process.stderr.write(`[cache] findModel ${key} → MISS\n`);
+
   const found = models.find(m => m.id === modelId);
-  if (found) return found;
-  if (!DOT_VERSION_PROVIDERS.has(aliasOrId)) return undefined;
+  if (found) { cacheFindModel(key, found); return found; }
+
+  if (!DOT_VERSION_PROVIDERS.has(aliasOrId)) { cacheFindModel(key, null); return undefined; }
+
   const normalized = normalizeModelId(modelId);
-  if (normalized === modelId) return undefined;
-  return models.find(m => m.id === normalized);
+  if (normalized === modelId) { cacheFindModel(key, null); return undefined; }
+
+  const retry = models.find(m => m.id === normalized);
+  cacheFindModel(key, retry);
+  return retry;
 }
 
 export function isValidModel(aliasOrId, modelId, passthroughProviders = new Set()) {

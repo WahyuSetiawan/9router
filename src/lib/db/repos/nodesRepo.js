@@ -2,6 +2,18 @@ import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
+// Debug: optional cache logging (only when DEBUG_CACHE env is set)
+const DEBUG_CACHE = typeof process !== "undefined" && process.env.DEBUG_CACHE;
+
+const CACHE_TTL = 30_000; // 30 seconds
+let _nodesCache = null;
+let _nodesCacheTs = 0;
+
+function invalidateNodesCache() {
+  _nodesCache = null;
+  _nodesCacheTs = 0;
+}
+
 function rowToNode(row) {
   if (!row) return null;
   const extra = parseJson(row.data, {});
@@ -39,12 +51,19 @@ function upsert(db, n) {
 }
 
 export async function getProviderNodes(filter = {}) {
-  const db = await getAdapter();
-  const where = [];
-  const params = [];
-  if (filter.type) { where.push("type = ?"); params.push(filter.type); }
-  const sql = `SELECT * FROM providerNodes${where.length ? ` WHERE ${where.join(" AND ")}` : ""}`;
-  return db.all(sql, params).map(rowToNode);
+  const now = Date.now();
+  if (!_nodesCache || (now - _nodesCacheTs) > CACHE_TTL) {
+    if (DEBUG_CACHE) process.stderr.write(`[cache] getProviderNodes → MISS\n`);
+    const db = await getAdapter();
+    _nodesCache = db.all(`SELECT * FROM providerNodes`).map(rowToNode);
+    _nodesCacheTs = now;
+  } else {
+    if (DEBUG_CACHE) process.stderr.write(`[cache] getProviderNodes → HIT\n`);
+  }
+  if (filter.type) {
+    return _nodesCache.filter(n => n.type === filter.type);
+  }
+  return _nodesCache;
 }
 
 export async function getProviderNodeById(id) {
@@ -66,6 +85,7 @@ export async function createProviderNode(data) {
     updatedAt: now,
   };
   upsert(db, node);
+  invalidateNodesCache();
   return node;
 }
 
@@ -79,6 +99,7 @@ export async function updateProviderNode(id, data) {
     upsert(db, merged);
     result = merged;
   });
+  invalidateNodesCache();
   return result;
 }
 
@@ -91,5 +112,6 @@ export async function deleteProviderNode(id) {
     removed = rowToNode(row);
     db.run(`DELETE FROM providerNodes WHERE id = ?`, [id]);
   });
+  invalidateNodesCache();
   return removed;
 }

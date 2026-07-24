@@ -7,16 +7,40 @@ const customKv = makeKv("customModels");
 const mitmKv = makeKv("mitmAlias");
 
 // modelAliases: key=alias, value=modelString
+
+// Debug: optional cache logging (only when DEBUG_CACHE env is set)
+const DEBUG_CACHE = typeof process !== "undefined" && process.env.DEBUG_CACHE;
+
+// Cache for getModelAliases()
+const ALIAS_CACHE_TTL = 30_000; // 30 seconds
+let _aliasCache = null;
+let _aliasCacheTs = 0;
+
+function invalidateAliasCache() {
+  _aliasCache = null;
+  _aliasCacheTs = 0;
+}
+
 export async function getModelAliases() {
-  return await aliasKv.getAll();
+  const now = Date.now();
+  if (!_aliasCache || (now - _aliasCacheTs) > ALIAS_CACHE_TTL) {
+    if (DEBUG_CACHE) process.stderr.write(`[cache] getModelAliases → MISS\n`);
+    _aliasCache = await aliasKv.getAll();
+    _aliasCacheTs = now;
+  } else {
+    if (DEBUG_CACHE) process.stderr.write(`[cache] getModelAliases → HIT\n`);
+  }
+  return _aliasCache;
 }
 
 export async function setModelAlias(alias, model) {
   await aliasKv.set(alias, model);
+  invalidateAliasCache();
 }
 
 export async function deleteModelAlias(alias) {
   await aliasKv.remove(alias);
+  invalidateAliasCache();
 }
 
 // customModels: key=`${providerAlias}|${id}|${type}`, value=full model object

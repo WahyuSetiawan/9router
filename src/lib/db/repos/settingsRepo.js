@@ -49,6 +49,14 @@ const DEFAULT_SETTINGS = {
   pxpipeTimeoutMs: 15000,
 };
 
+// Debug: optional cache logging (only when DEBUG_CACHE env is set)
+const DEBUG_CACHE = typeof process !== "undefined" && process.env.DEBUG_CACHE;
+
+// In-memory cache with TTL
+let _cache = null;
+let _cacheTs = 0;
+const CACHE_TTL = 100; // ms
+
 async function readRaw() {
   const db = await getAdapter();
   const row = db.get(`SELECT data FROM settings WHERE id = 1`);
@@ -75,8 +83,17 @@ function mergeWithDefaults(raw) {
 }
 
 export async function getSettings() {
+  const now = Date.now();
+  if (_cache && (now - _cacheTs) < CACHE_TTL) {
+    if (DEBUG_CACHE) process.stderr.write(`[cache] getSettings → HIT\n`);
+    return _cache;
+  }
+  if (DEBUG_CACHE) process.stderr.write(`[cache] getSettings → MISS\n`);
   const raw = await readRaw();
-  return mergeWithDefaults(raw);
+  const result = mergeWithDefaults(raw);
+  _cache = result;
+  _cacheTs = now;
+  return result;
 }
 
 // Atomic read-merge-write inside transaction (prevents losing concurrent updates)
@@ -92,6 +109,8 @@ export async function updateSettings(updates) {
       [stringifyJson(next)]
     );
   });
+  _cache = null;
+  _cacheTs = 0;
   return mergeWithDefaults(next);
 }
 

@@ -24,6 +24,13 @@
 
 import { matchPattern } from "./pricing.js";
 
+// Debug: optional cache logging (only when DEBUG_CACHE env is set)
+const DEBUG_CACHE = typeof process !== "undefined" && process.env.DEBUG_CACHE;
+
+// Memoization cache — static data, no invalidation needed
+const MAX_CAPS_ENTRIES = 10000;
+const _capsCache = new Map();
+
 /**
  * Safe floor — every resolved result is merged over this so consumers
  * never need null-checks. Most modern LLMs meet these limits.
@@ -309,28 +316,62 @@ export const PATTERN_CAPABILITIES = [
  */
 export function getCapabilitiesForModel(provider, model) {
   if (!model) return { ...DEFAULT_CAPABILITIES };
+  const key = `${provider || ""}:${model}`;
+  const cached = _capsCache.get(key);
+  if (cached !== undefined) {
+    if (DEBUG_CACHE) process.stderr.write(`[cache] getCapabilitiesForModel ${key} → HIT\n`);
+    return cached;
+  }
+  if (DEBUG_CACHE) process.stderr.write(`[cache] getCapabilitiesForModel ${key} → MISS\n`);
 
   // Canonical exact lookup strips vendor prefix: "anthropic/claude-opus-4.7" -> "claude-opus-4.7".
   const baseModel = model.includes("/") ? model.split("/").pop() : model;
+  let result = null;
 
   // 1. Provider-specific override
   if (provider) {
     const providerCaps = PROVIDER_CAPABILITIES[provider];
-    if (providerCaps?.[model]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[model] };
-    if (providerCaps?.[baseModel]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[baseModel] };
+    if (providerCaps?.[model]) {
+      result = { ...DEFAULT_CAPABILITIES, ...providerCaps[model] };
+    } else if (providerCaps?.[baseModel]) {
+      result = { ...DEFAULT_CAPABILITIES, ...providerCaps[baseModel] };
+    }
   }
 
   // 2. Canonical exact
-  if (MODEL_CAPABILITIES[baseModel]) return { ...DEFAULT_CAPABILITIES, ...MODEL_CAPABILITIES[baseModel] };
-  if (MODEL_CAPABILITIES[model]) return { ...DEFAULT_CAPABILITIES, ...MODEL_CAPABILITIES[model] };
+  if (!result) {
+    if (MODEL_CAPABILITIES[baseModel]) {
+      result = { ...DEFAULT_CAPABILITIES, ...MODEL_CAPABILITIES[baseModel] };
+    } else if (MODEL_CAPABILITIES[model]) {
+      result = { ...DEFAULT_CAPABILITIES, ...MODEL_CAPABILITIES[model] };
+    }
+  }
 
   // 3. Pattern match (first match wins)
-  for (const { pattern, caps } of PATTERN_CAPABILITIES) {
-    if (matchPattern(pattern, baseModel) || matchPattern(pattern, model)) {
-      return { ...DEFAULT_CAPABILITIES, ...caps };
+  if (!result) {
+    for (const { pattern, caps } of PATTERN_CAPABILITIES) {
+      if (matchPattern(pattern, baseModel) || matchPattern(pattern, model)) {
+        result = { ...DEFAULT_CAPABILITIES, ...caps };
+        break;
+      }
     }
   }
 
   // 4. Floor
-  return { ...DEFAULT_CAPABILITIES };
+  if (!result) result = { ...DEFAULT_CAPABILITIES };
+
+  return cacheAndReturn(key, result);
+}
+
+function cacheAndReturn(key, result) {
+  if (_capsCache.size >= MAX_CAPS_ENTRIES) {
+    let deleteCount = Math.floor(MAX_CAPS_ENTRIES / 2);
+    for (const k of _capsCache.keys()) {
+      if (deleteCount <= 0) break;
+      _capsCache.delete(k);
+      deleteCount--;
+    }
+  }
+  _capsCache.set(key, result);
+  return result;
 }
