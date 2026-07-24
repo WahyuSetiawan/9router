@@ -25,6 +25,22 @@ function sanitizeToolId(id) {
 export function ensureToolCallIds(body) {
   if (!body.messages || !Array.isArray(body.messages)) return body;
 
+  // Quick early-return: cek apakah ada tool_calls/tool_use sama sekali
+  // ~90% request text-only — skip O(n) scan
+  let hasTools = false;
+  for (let i = 0; i < body.messages.length; i++) {
+    const m = body.messages[i];
+    if (m.role === 'tool' || (m.role === 'assistant' && m.tool_calls)) { hasTools = true; break; }
+    if (Array.isArray(m.content)) {
+      for (let k = 0; k < m.content.length; k++) {
+        const b = m.content[k];
+        if (b.type === 'tool_use' || b.type === 'tool_result') { hasTools = true; break; }
+      }
+      if (hasTools) break;
+    }
+  }
+  if (!hasTools) return body;
+
   for (let i = 0; i < body.messages.length; i++) {
     const msg = body.messages[i];
     if (msg.role === "assistant" && msg.tool_calls && Array.isArray(msg.tool_calls)) {

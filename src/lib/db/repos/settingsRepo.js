@@ -55,7 +55,7 @@ const DEBUG_CACHE = typeof process !== "undefined" && process.env.DEBUG_CACHE;
 // In-memory cache with TTL
 let _cache = null;
 let _cacheTs = 0;
-const CACHE_TTL = 100; // ms
+const CACHE_TTL = 5000; // ms — naik dari 100ms karena updateSettings sudah bust cache (_cache=null)
 
 async function readRaw() {
   const db = await getAdapter();
