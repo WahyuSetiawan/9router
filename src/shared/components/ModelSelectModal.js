@@ -8,6 +8,7 @@ import CapacityBadges from "./CapacityBadges";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, AI_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, getProviderAlias } from "@/shared/constants/providers";
+import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
 
 // Provider order: OAuth first, then Free Tier, then API Key (matches dashboard/providers)
 const PROVIDER_ORDER = [
@@ -49,6 +50,7 @@ export default function ModelSelectModal({
   const [customModels, setCustomModels] = useState([]);
   const [disabledModels, setDisabledModels] = useState({});
   const [cursorModels, setCursorModels] = useState([]);
+  const [suggestedModels, setSuggestedModels] = useState({});
 
   // Cursor exposes the usable catalog per account. Keep the static catalog only
   // as a fallback, since it quickly becomes stale and different accounts can
@@ -106,6 +108,40 @@ export default function ModelSelectModal({
   useEffect(() => {
     if (isOpen) fetchCombos();
   }, [isOpen]);
+
+  // Fetch suggested models for passthrough providers (e.g. kilocode)
+  useEffect(() => {
+    const loadSuggestedModels = async () => {
+      const fetchForProvider = async (providerId) => {
+        const providerInfo = AI_PROVIDERS[providerId] || {};
+        if (!providerInfo.passthroughModels) return null;
+        const fetcher = providerInfo.modelsFetcher;
+        if (!fetcher) return null;
+        try {
+          return await fetchSuggestedModels(fetcher);
+        } catch {
+          return null;
+        }
+      };
+
+      const results = await Promise.all(
+        filteredActiveProviders.map(p => fetchForProvider(p.provider))
+      );
+
+      const map = {};
+      let idx = 0;
+      for (const res of results) {
+        if (Array.isArray(res) && res.length > 0) {
+          const providerId = filteredActiveProviders[idx]?.provider;
+          if (providerId) map[providerId] = res;
+        }
+        idx++;
+      }
+      setSuggestedModels(prev => ({ ...prev, ...map }));
+    };
+
+    if (isOpen && filteredActiveProviders.length > 0) loadSuggestedModels();
+  }, [isOpen, filteredActiveProviders, AI_PROVIDERS]);
 
   const fetchProviderNodes = async () => {
     try {
@@ -257,7 +293,12 @@ export default function ModelSelectModal({
             .filter((m) => !getModelKind(m) || getModelKind(m) === "llm")
             .map((m) => ({ id: m.id, name: m.name, value: `${alias}/${m.id}`, kind: getModelKind(m) }))
             .filter((m) => !seen.has(m.value));
-          combined = [...registeredLlms, ...aliasModels.filter((m) => !registeredLlms.some((registered) => registered.value === m.value)), ...hardcoded];
+          hardcoded.forEach((m) => seen.add(m.value));
+          // Merge dynamic models from modelsFetcher (e.g. kilocode → Kilo catalog)
+          const suggested = (suggestedModels[providerId] || [])
+            .filter((m) => m.id && !seen.has(`${alias}/${m.id}`))
+            .map((m) => ({ id: m.id, name: m.name || m.id, value: `${alias}/${m.id}` }));
+          combined = [...registeredLlms, ...aliasModels.filter((m) => !registeredLlms.some((registered) => registered.value === m.value)), ...hardcoded, ...suggested];
         }
 
         if (combined.length > 0) {
@@ -393,7 +434,7 @@ export default function ModelSelectModal({
     });
 
     return groups;
-  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, disabledModels, kindFilter, activeProviders, cursorModels]);
+  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, disabledModels, kindFilter, activeProviders, cursorModels, suggestedModels]);
 
   // Filter combos by search query (and hide combos when kindFilter is set — combos are LLM-only by design)
   const filteredCombos = useMemo(() => {
