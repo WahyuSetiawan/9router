@@ -8,6 +8,9 @@ import * as log from "../utils/logger.js";
 // Per-provider mutex map — concurrent sessions for different providers can run in parallel
 const selectionMutexes = new Map();
 
+const CREDENTIALS_CACHE_TTL = 300_000;
+const credentialsCache = new Map();
+
 /**
  * Lazy-init per-provider mutex entry so concurrent sessions targeting
  * different providers can run in parallel.
@@ -37,6 +40,12 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
   const providerId = resolveProviderId(provider);
+
+  // Check in-memory cache before acquiring mutex
+  const cached = credentialsCache.get(providerId);
+  if (cached && (Date.now() - cached.ts) < CREDENTIALS_CACHE_TTL) {
+    return cached.data;
+  }
 
   // Acquire per-provider mutex
   const entry = getProviderSelectionMutex(providerId);
@@ -183,7 +192,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
 
-    return {
+    const resultObj = {
       authType: connection.authType,
       apiKey: connection.apiKey,
       accessToken: connection.accessToken,
@@ -210,6 +219,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       // Pass full connection for clearAccountError to read modelLock_* keys
       _connection: connection
     };
+    credentialsCache.set(providerId, { data: resultObj, ts: Date.now() });
+    return resultObj;
   } finally {
     if (resolveMutex) resolveMutex();
   }
@@ -253,6 +264,11 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     lastErrorAt: new Date().toISOString(),
     backoffLevel: newBackoffLevel ?? backoffLevel
   });
+
+  // Invalidate credentials cache so next request re-fetches fresh state
+  if (provider) {
+    invalidateCredentialsCache(provider);
+  }
 
   const lockKey = Object.keys(lockUpdate)[0];
   const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
@@ -340,4 +356,13 @@ export function extractApiKey(request) {
 export async function isValidApiKey(apiKey) {
   if (!apiKey) return false;
   return await validateApiKey(apiKey);
+}
+
+/**
+ * Invalidate credentials cache for a specific provider.
+ * Call this after marking an account unavailable so next request re-fetches.
+ * @param {string} providerId
+ */
+export function invalidateCredentialsCache(providerId) {
+  credentialsCache.delete(providerId);
 }
