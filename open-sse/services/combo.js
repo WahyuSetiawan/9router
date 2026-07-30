@@ -15,6 +15,10 @@ const HARD_CAPS = new Set(["vision", "pdf", "audioInput", "videoInput"]);
 const TOOL_CALL_PREFIX = "[Called tools: ";
 const TOOL_RESULT_PREFIX = "[Tool result: ";
 
+// TTL for rotation state entries — resets to index 0 after inactivity so stale
+// state doesn't persist when combo config changes (models reordered, etc.).
+const ROTATION_STATE_TTL = 60_000; // 60s
+
 // Flatten tool turns into prose so panel models keep the context but can't loop
 // on tools: drop the request's tools, turn tool/function results into assistant
 // text, and inline assistant tool_calls names instead of the structured field.
@@ -82,8 +86,9 @@ export function reorderByCapabilities(models, required) {
 }
 
 /**
- * Track rotation state per combo (for round-robin strategy)
- * @type {Map<string, { index: number, consecutiveUseCount: number }>}
+ * Track rotation state per combo (for round-robin strategy).
+ * State auto-resets if models list changes or after 60s inactivity.
+ * @type {Map<string, { index: number, consecutiveUseCount: number, modelCount: number, ts: number }>}
  */
 const comboRotationState = new Map();
 
@@ -161,24 +166,45 @@ export function getRotatedModels(models, comboName, strategy, stickyLimit = 1) {
 
   const rotationKey = comboName || "__default__";
   const normalizedStickyLimit = normalizeStickyLimit(stickyLimit);
-  const existingState = comboRotationState.get(rotationKey);
-  const state = typeof existingState === "number"
-    ? { index: existingState, consecutiveUseCount: 0 }
-    : (existingState || { index: 0, consecutiveUseCount: 0 });
+  const existing = comboRotationState.get(rotationKey);
+
+  // Normalize legacy number-only state → object, reset if stale
+  let state = typeof existing === "number"
+    ? { index: existing, consecutiveUseCount: 0 }
+    : existing;
+
+  if (state) {
+    // Stale if models list changed (models reordered/added/removed) or TTL expired
+    const stale = state.modelCount !== models.length ||
+      (Date.now() - (state.ts || 0)) > ROTATION_STATE_TTL;
+    if (stale) {
+      comboRotationState.delete(rotationKey);
+      state = null;
+    }
+  }
+
+  if (!state) {
+    state = { index: 0, consecutiveUseCount: 0 };
+  }
 
   const currentIndex = state.index % models.length;
   const rotatedModels = rotateModelsFromIndex(models, currentIndex);
   const nextUseCount = state.consecutiveUseCount + 1;
+  const ts = Date.now();
 
   if (nextUseCount >= normalizedStickyLimit) {
     comboRotationState.set(rotationKey, {
       index: (currentIndex + 1) % models.length,
       consecutiveUseCount: 0,
+      modelCount: models.length,
+      ts,
     });
   } else {
     comboRotationState.set(rotationKey, {
       index: currentIndex,
       consecutiveUseCount: nextUseCount,
+      modelCount: models.length,
+      ts,
     });
   }
 
