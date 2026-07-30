@@ -45,7 +45,8 @@ export async function handleChat(request, clientRawRequest = null) {
       endpoint: url.pathname,
       body,
       headers: Object.fromEntries(request.headers.entries())
-  };
+    };
+  }
   cacheClaudeHeaders(clientRawRequest.headers);
 
   const modelStr = body.model;
