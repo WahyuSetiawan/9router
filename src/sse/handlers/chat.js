@@ -45,8 +45,7 @@ export async function handleChat(request, clientRawRequest = null) {
       endpoint: url.pathname,
       body,
       headers: Object.fromEntries(request.headers.entries())
-    };
-  }
+  };
   cacheClaudeHeaders(clientRawRequest.headers);
 
   const modelStr = body.model;
@@ -142,7 +141,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   if (!modelInfo.provider) {
     const comboModels = await getComboModels(modelStr);
     if (comboModels) {
-      const chatSettings = await getSettings();
+
       // Check for combo-specific strategy first, fallback to global
       const comboStrategies = chatSettings.comboStrategies || {};
       const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
@@ -191,15 +190,23 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   // Extract userAgent from request
   const userAgent = request?.headers?.get("user-agent") || "";
 
-  // Try with available accounts (fallback on errors)
+  // Fetch settings + provider connections in parallel (independent reads)
+  const resolvedProviderId = resolveProviderId(provider);
+  const [chatSettings, providerConnections] = await Promise.all([
+    getSettings(),
+    getProviderConnections({ provider: resolvedProviderId, isActive: true })
+  ]);
+
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
-  const resolvedProviderId = resolveProviderId(provider);
   const cachedConnections = {
     providerId: resolvedProviderId,
-    connections: await getProviderConnections({ provider: resolvedProviderId, isActive: true })
+    connections: providerConnections
   };
+
+  // Lazily warms the in-process module on first use; null when not installed (fail-open)
+  const pxpipeTransform = chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null;
 
   while (true) {
     const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {}, cachedConnections);
@@ -234,7 +241,6 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     }
 
     // Use shared chatCore
-    const chatSettings = await getSettings();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
     const result = await handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
@@ -257,8 +263,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       pxpipeEnabled: !!chatSettings.pxpipeEnabled,
       pxpipeMinChars: chatSettings.pxpipeMinChars,
       pxpipeTimeoutMs: chatSettings.pxpipeTimeoutMs,
-      // Lazily warms the in-process module on first use; null when not installed (fail-open)
-      pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
+      pxpipeTransform: pxpipeTransform,
       onPxpipeEvent: appendPxpipeEvent,
       providerThinking,
       // Detect source format by endpoint + body

@@ -55,6 +55,7 @@ const DEBUG_CACHE = typeof process !== "undefined" && process.env.DEBUG_CACHE;
 // In-memory cache with TTL
 let _cache = null;
 let _cacheTs = 0;
+let _cachePromise = null;
 const CACHE_TTL = 5000; // ms — naik dari 100ms karena updateSettings sudah bust cache (_cache=null)
 
 async function readRaw() {
@@ -88,12 +89,21 @@ export async function getSettings() {
     if (DEBUG_CACHE) process.stderr.write(`[cache] getSettings → HIT\n`);
     return _cache;
   }
+  // Deduplicate concurrent cache misses: only one caller fetches DB
+  if (_cachePromise) {
+    if (DEBUG_CACHE) process.stderr.write(`[cache] getSettings → WAIT (dedup)\n`);
+    return _cachePromise;
+  }
   if (DEBUG_CACHE) process.stderr.write(`[cache] getSettings → MISS\n`);
-  const raw = await readRaw();
-  const result = mergeWithDefaults(raw);
-  _cache = result;
-  _cacheTs = now;
-  return result;
+  _cachePromise = (async () => {
+    const raw = await readRaw();
+    const result = mergeWithDefaults(raw);
+    _cache = result;
+    _cacheTs = Date.now();
+    _cachePromise = null; // clear promise once resolved
+    return result;
+  })();
+  return _cachePromise;
 }
 
 // Atomic read-merge-write inside transaction (prevents losing concurrent updates)
@@ -111,6 +121,7 @@ export async function updateSettings(updates) {
   });
   _cache = null;
   _cacheTs = 0;
+  _cachePromise = null;
   return mergeWithDefaults(next);
 }
 

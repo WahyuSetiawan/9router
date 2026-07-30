@@ -189,25 +189,40 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Per-request opt-out: client can bypass all token savers via header
   const tokenSaverEnabled = clientRawRequest?.headers?.[TOKEN_SAVER_HEADER]?.toLowerCase() !== "off";
 
-  // RTK: compress tool_result content
-  const rtkStats = compressMessages(translatedBody, tokenSaverEnabled && rtkEnabled);
-  const rtkLine = formatRtkLog(rtkStats);
-  if (rtkLine) console.log(rtkLine);
-
-  // Headroom: optional external proxy compression; fail open if proxy is absent.
-  const headroomDiagnostics = {};
-  const headroomStats = await compressWithHeadroom(translatedBody, { enabled: tokenSaverEnabled && headroomEnabled, url: headroomUrl, model: upstreamModel, format: finalFormat, compressUserMessages: headroomCompressUserMessages, diagnostics: headroomDiagnostics });
-  const headroomLine = formatHeadroomLog(headroomStats);
-  const headroomSizeLine = formatHeadroomSizeLog(headroomDiagnostics);
-  if (headroomLine) {
-    log?.info?.("HEADROOM", `${headroomLine}${headroomSizeLine ? ` | ${headroomSizeLine}` : ""}`);
-    if (isHeadroomPhantomSavings(headroomStats, headroomDiagnostics)) {
-      log?.warn?.("HEADROOM", `reported token delta, but outbound JSON shrank <5%; provider may bill near-original payload | ${formatHeadroomSizeLog(headroomDiagnostics)}`);
-    }
-  } else if (tokenSaverEnabled && headroomEnabled) log?.warn?.("HEADROOM", `skipped: ${headroomDiagnostics.reason || "compression unavailable"}${headroomDiagnostics.endpoint ? ` (${headroomDiagnostics.endpoint})` : ""}`);
-
   // Token-saver flags accumulator for the single "⚙" log line below.
   const xf = [];
+
+  // Run RTK + Headroom in parallel (safe—no dependencies between them)
+  const [rtkStats, headroomResult] = await Promise.all([
+    (async () => {
+      try {
+        return compressMessages(translatedBody, tokenSaverEnabled && rtkEnabled);
+      } catch { return null; }
+    })(),
+    (async () => {
+      try {
+        const diagnostics = {};
+        const stats = await compressWithHeadroom(translatedBody, { enabled: tokenSaverEnabled && headroomEnabled, url: headroomUrl, model: upstreamModel, format: finalFormat, compressUserMessages: headroomCompressUserMessages, diagnostics });
+        return { stats, diagnostics };
+      } catch { return null; }
+    })(),
+  ]);
+
+  // RTK logging
+  const rtkLine = rtkStats ? formatRtkLog(rtkStats) : null;
+  if (rtkLine) console.log(rtkLine);
+
+  // Headroom logging
+  const headroomLine = headroomResult?.stats ? formatHeadroomLog(headroomResult.stats) : null;
+  const headroomSizeLine = headroomResult?.diagnostics ? formatHeadroomSizeLog(headroomResult.diagnostics) : null;
+  if (headroomLine) {
+    log?.info?.("HEADROOM", `${headroomLine}${headroomSizeLine ? ` | ${headroomSizeLine}` : ""}`);
+    if (isHeadroomPhantomSavings(headroomResult.stats, headroomResult.diagnostics)) {
+      log?.warn?.("HEADROOM", `reported token delta, but outbound JSON shrank <5%; provider may bill near-original payload | ${formatHeadroomSizeLog(headroomResult.diagnostics)}`);
+    }
+  } else if (tokenSaverEnabled && headroomEnabled) {
+    log?.warn?.("HEADROOM", `skipped: ${headroomResult?.diagnostics?.reason || "compression unavailable"}${headroomResult?.diagnostics?.endpoint ? ` (${headroomResult.diagnostics.endpoint})` : ""}`);
+  }
 
   // Caveman: inject terse-style system prompt
   if (tokenSaverEnabled && cavemanEnabled && cavemanLevel) {
@@ -224,14 +239,16 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // PXPIPE: image bulky context (Claude-format bodies only), last saver before dispatch
   let pxpipeSummary = null;
   if (pxpipeEnabled) {
-    const pxpipeResult = await compressWithPxpipe(translatedBody, {
-      enabled: true, format: finalFormat, model: upstreamModel,
-      minChars: pxpipeMinChars, timeoutMs: pxpipeTimeoutMs, transform: pxpipeTransform,
-    });
-    pxpipeSummary = pxpipeResult.summary;
-    if (pxpipeResult.body) translatedBody = pxpipeResult.body;
-    if (pxpipeSummary?.applied) xf.push(`PXPIPE:${pxpipeSummary.imageCount}img`);
-    try { onPxpipeEvent?.({ provider, model, ...pxpipeSummary }); } catch { /* stats must not break requests */ }
+    try {
+      const pxpipeResult = await compressWithPxpipe(translatedBody, {
+        enabled: true, format: finalFormat, model: upstreamModel,
+        minChars: pxpipeMinChars, timeoutMs: pxpipeTimeoutMs, transform: pxpipeTransform,
+      });
+      pxpipeSummary = pxpipeResult.summary;
+      if (pxpipeResult.body) translatedBody = pxpipeResult.body;
+      if (pxpipeSummary?.applied) xf.push(`PXPIPE:${pxpipeSummary.imageCount}img`);
+      try { onPxpipeEvent?.({ provider, model, ...pxpipeSummary }); } catch { /* stats must not break requests */ }
+    } catch { /* pxpipe fail-open */ }
   }
 
   if (xf.length && log?.line) log.line(reqTag, "⚙", xf.join(" · "));
