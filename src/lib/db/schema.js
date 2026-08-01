@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 3;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -150,6 +150,36 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_rd_provider ON requestDetails(provider)",
       "CREATE INDEX IF NOT EXISTS idx_rd_model ON requestDetails(model)",
       "CREATE INDEX IF NOT EXISTS idx_rd_conn ON requestDetails(connectionId)",
+    ],
+  },
+  model_presets: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      name: "TEXT NOT NULL",
+      description: "TEXT",
+      models: "TEXT NOT NULL DEFAULT '[]'",
+      created_at: "TEXT DEFAULT (datetime('now'))",
+      updated_at: "TEXT DEFAULT (datetime('now'))",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_mp_name ON model_presets(name)",
+    ],
+  },
+  model_judgments: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      preset_id: "TEXT NOT NULL REFERENCES model_presets(id) ON DELETE CASCADE",
+      model_id: "TEXT NOT NULL",
+      provider: "TEXT",
+      reasoning: "TEXT",
+      score: "REAL",
+      accepted: "INTEGER DEFAULT 0",
+      created_at: "TEXT DEFAULT (datetime('now'))",
+      updated_at: "TEXT DEFAULT (datetime('now'))",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_mj_preset ON model_judgments(preset_id)",
+      "CREATE INDEX IF NOT EXISTS idx_mj_model ON model_judgments(model_id)",
     ],
   },
 };
