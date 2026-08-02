@@ -464,6 +464,7 @@ export default function ProvidersPage() {
       )}
 
       {/* Free Tier Providers */}
+      {/* Free providers (no‑auth, e.g. OpenCode Free) render before Free‑Tier providers. */}
       {(freeEntries.length > 0 || freeTierEntries.length > 0) && (
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
