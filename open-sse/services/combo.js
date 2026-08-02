@@ -220,6 +220,132 @@ export function resetComboRotation(comboName) {
   else comboRotationState.clear();
 }
 
+// --- session-affinity strategy ---
+const comboSessionMap = new Map();        // `${comboName}:${sessionId}` → { model, ts }
+const SESSION_MAP_CAP = 10_000;           // LRU-style cap → mencegah memory leak
+const SESSION_TTL_MS = 60 * 60 * 1000;    // idle 1 jam
+
+function evictExpiredSessions(now = Date.now()) {
+  for (const [key, v] of comboSessionMap) {
+    if (now - v.ts > SESSION_TTL_MS) comboSessionMap.delete(key);
+  }
+  if (comboSessionMap.size > SESSION_MAP_CAP) {
+    const oldest = [...comboSessionMap.entries()]
+      .sort((a, b) => a[1].ts - b[1].ts)
+      .slice(0, comboSessionMap.size - SESSION_MAP_CAP);
+    for (const [k] of oldest) comboSessionMap.delete(k);
+  }
+}
+
+/** Hapus pin session (dipanggil saat model sticky gagal NON-transient). */
+export function evictSessionModel(comboName, sessionId) {
+  if (sessionId) comboSessionMap.delete(`${comboName}:${sessionId}`);
+}
+
+export function pickLeastUsed(models, usageStats = {}) {
+  if (!Array.isArray(models) || models.length <= 1) return models || [];
+  const counts = models.map((m) => ({ m, c: usageStats[m] || 0 }));
+  counts.sort((a, b) => a.c - b.c);
+  // Jitter grup dengan count sama: cold start (semua 0) HARUS tersebar,
+  // bukan collapse ke models[0] gara-gara stable sort.
+  let i = 0;
+  while (i < counts.length) {
+    let j = i + 1;
+    while (j < counts.length && counts[j].c === counts[i].c) j++;
+    for (let k = j - 1; k > i; k--) {
+      const r = i + Math.floor(Math.random() * (k - i + 1));
+      [counts[k], counts[r]] = [counts[r], counts[k]];
+    }
+    i = j;
+  }
+  return counts.map((x) => x.m);
+}
+
+export function pickSessionAffinity(models, comboName, sessionId, usageStats = {}) {
+  evictExpiredSessions(); // sweep murah per entry, bounded oleh SESSION_MAP_CAP
+  if (!sessionId) return pickLeastUsed(models, usageStats);
+  const key = `${comboName}:${sessionId}`;
+  const existing = comboSessionMap.get(key);
+  if (existing && models.includes(existing.model)) {
+    comboSessionMap.set(key, { ...existing, ts: Date.now() }); // refresh TTL
+    return rotateModelsFromIndex(models, models.indexOf(existing.model));
+  }
+  const selected = pickLeastUsed(models, usageStats);
+  comboSessionMap.set(key, { model: selected[0], ts: Date.now() });
+  return selected;
+}
+
+// --- race strategy ---
+
+/**
+ * Handle a race combo: fan out to every candidate in parallel, first-success-wins.
+ * Reuses withTimeout (already used by handleFusionChat). All candidates are forced
+ * non-streaming with tools stripped (race cannot execute tools in parallel).
+ * Losers and late bodies are best-effort cancelled via res.body?.cancel?().
+ */
+export async function handleRaceChat({ body, models, handleSingleModel, log, comboName, raceTimeoutMs = 90_000 }) {
+  const candidates = Array.isArray(models) ? models.filter(Boolean) : [];
+  if (candidates.length === 0) {
+    return new Response(
+      JSON.stringify({ error: { message: "Race combo has no models" } }),
+      { status: 400, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
+  // Pre-filter hard caps (race bypasses autoSwitch):
+  const required = detectRequiredCapabilities(body);
+  const hard = [...required].filter((c) => HARD_CAPS.has(c));
+  if (hard.length) {
+    const capable = candidates.filter((m) => {
+      const slash = m.indexOf("/");
+      const provider = slash > 0 ? m.slice(0, slash) : "";
+      const model = slash > 0 ? m.slice(slash + 1) : m;
+      const caps = getCapabilitiesForModel(provider, model);
+      return hard.every((c) => caps[c] === true);
+    });
+    if (capable.length) {
+      candidates.length = 0;
+      candidates.push(...capable);
+    }
+  }
+
+  // raceBody dibangun SEBELUM early-return: kontrak race konsisten untuk
+  // SEMUA jalur — tanpa tools/tool_choice + non-streaming.
+  const { tools, tool_choice, ...rest } = body;
+  const raceBody = { ...rest, stream: false };
+
+  if (candidates.length === 1) {
+    return handleSingleModel(raceBody, candidates[0], true); // tanpa tools & non-streaming
+  }
+
+  return new Promise((resolve) => {
+    let settled = 0;
+    let done = false;
+    const fail = () => {
+      if (++settled === candidates.length && !done) {
+        done = true;
+        resolve(new Response(
+          JSON.stringify({ error: { message: "All race models failed" } }),
+          { status: 503, headers: { "Content-Type": "application/json" } }
+        ));
+      }
+    };
+    candidates.forEach((m) => {
+      const raw = handleSingleModel(raceBody, m, true);
+      withTimeout(raw, raceTimeoutMs).then((res) => {
+        if (!res || res.__timeout || res.__error) {
+          raw.then((late) => late?.body?.cancel?.()).catch(() => {}); // cancel late body
+          return fail();
+        }
+        if (done) { res.body?.cancel?.(); return; }      // race selesai → cancel late success
+        if (!res.ok) { res.body?.cancel?.(); return fail(); } // loser → bebas-kan body
+        done = true;
+        resolve(res);                                      // first-success-wins
+      });
+    });
+  });
+}
+
 /**
  * Get combo models from combos data
  * @param {string} modelStr - Model string to check

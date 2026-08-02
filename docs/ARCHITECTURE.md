@@ -239,6 +239,28 @@ flowchart TD
 
 Fallback decisions are driven by `open-sse/services/accountFallback.js` using status codes and error-message heuristics.
 
+## Combo Distribution Strategies
+
+9Router supports six combo distribution strategies that control how requests are routed across the models in a combo. The strategies are defined in `open-sse/config/comboStrategies.js` (`COMBO_STRATEGIES`) and implemented in `open-sse/services/combo.js` with routing logic in `src/sse/handlers/chat.js`.
+
+| Strategy | Semantics |
+|----------|-----------|
+| `fallback` | Sequential try: model 1 → N, only advances on fallback-eligible error (default). |
+| `round-robin` | Rotates through models per request (respects `comboStickyRoundRobinLimit`). |
+| `session-affinity` | Sticky per session: pins a session to one model using LRU/TTL map (cap 10k entries, 1h idle TTL). New sessions pick via `least-used`. Eviction only on non-transient 4xx errors (401/403/404/410…); 5xx/429/408 are treated as transient/backoff and do **not** evict the pin. |
+| `least-used` | Balances by historical request count (`provider/model` key from `usageHistory`). Tie-breaker uses Fisher–Yates jitter on equal-count groups so cold start (all counts 0) spreads across models. `getProviderUsage()` cached 5s TTL. |
+| `race` | First-success-wins: fans out to all candidates in parallel (`stream:false`, `tools`/`tool_choice` stripped). Uses `withTimeout` (90s default). Losers and late-arriving bodies are best-effort cancelled via `res.body?.cancel?.()`. Capability pre-filter drops candidates lacking required hard caps (vision/pdf/audioInput/videoInput) before fan-out. Single-candidate path uses the same `raceBody` contract (no tools, non-streaming). |
+| `fusion` | Parallel panel + judge synthesis (existing, unchanged). |
+
+**Scope of new strategies:** The three new strategies (`session-affinity`, `least-used`, `race`) only apply to the **chat level-1 path** (`src/sse/handlers/chat.js`). Non-chat handlers (image generation, TTS, search, fetch) normalize unsupported strategies to `fallback` via `normalizeComboStrategy` (with a warning log) — they only understand `fallback` and `round-robin`.
+
+**Nested combo behavior:** A nested combo is resolved inside `handleSingleModelChat` (`chat.js:141-182`). The nested block **inherits `fallback`** and is **not** given branches for the new strategies. Implications:
+
+1. **Race pre-filter vs nested combo**: The race capability pre-filter splits model strings by `/` (`provider/model`). A nested combo name has no slash → provider becomes `""` → it fails the hard-cap check and is dropped from the race candidate list (safe: it simply doesn't participate in the race; fallback to full list if no candidate passes).
+2. **Session-affinity pin to nested combo**: If a level-1 `session-affinity` pins a session to a nested combo whose internal strategy is `race`, the combination (sticky outer + race inner) is undefined. Mitigation: the new strategies are documented as **level-1 only**. If nested combo strategies are needed in the future, add branches in `chat.js:141-182` following the same pattern.
+
+**Settings validation:** `settingsRepo.updateSettings` validates `comboStrategy` and any `comboStrategies[name].fallbackStrategy` against the `COMBO_STRATEGIES` enum. Invalid values throw `TypeError`, which is mapped to HTTP 400 in `src/app/api/settings/route.js`.
+
 ## OAuth Onboarding and Token Refresh Lifecycle
 
 ```mermaid

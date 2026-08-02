@@ -9,6 +9,7 @@ import { Card, Button, Modal, Input, CardSkeleton, ModelSelectModal, ConfirmModa
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
+import { COMBO_STRATEGIES, STRATEGY_LABELS } from "open-sse/config/comboStrategies.js";
 
 // Validate combo name: only a-z, A-Z, 0-9, -, _
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
@@ -230,11 +231,8 @@ export default function CombosPage() {
   );
 }
 
-const STRATEGY_OPTIONS = [
-  { value: "fallback", label: "Fallback — try in order" },
-  { value: "round-robin", label: "Round Robin — rotate" },
-  { value: "fusion", label: "Fusion — panel + judge" },
-];
+// Single source of truth: enum + labels from open-sse/config/comboStrategies.js
+const STRATEGY_OPTIONS = COMBO_STRATEGIES.map((value) => ({ value, label: STRATEGY_LABELS[value] }));
 
 function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy }) {
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);
@@ -334,6 +332,14 @@ function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdi
           </div>
         </div>
       </div>
+
+      {/* Race strategy warning — appears when race is selected */}
+      {current === "race" && (
+        <div className="mt-3 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400 flex items-start gap-2">
+          <span className="material-symbols-outlined text-[15px] shrink-0">warning</span>
+          <span>⚠️ Peringatan: Strategi race mengirim prompt ke SEMUA provider sekaligus. Biaya token meningkat Nx hingga semua provider menjawab.</span>
+        </div>
+      )}
 
       {/* Judge model picker (single-select; combo members make natural judges too) */}
       {showJudgeSelect && (

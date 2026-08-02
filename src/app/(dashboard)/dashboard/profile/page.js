@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Card, Button, Toggle, Input } from "@/shared/components";
+import { Card, Button, Toggle, Input, Select } from "@/shared/components";
 import Modal, { ConfirmModal } from "@/shared/components/Modal";
 import LanguageSwitcher from "@/shared/components/LanguageSwitcher";
 import { useTheme } from "@/shared/hooks/useTheme";
@@ -9,6 +9,7 @@ import { cn } from "@/shared/utils/cn";
 import { APP_CONFIG } from "@/shared/constants/config";
 import { LOCALE_COOKIE, normalizeLocale } from "@/i18n/config";
 import { LOCALE_FLAGS } from "@/shared/constants/locales";
+import { COMBO_STRATEGIES, STRATEGY_LABELS } from "open-sse/config/comboStrategies.js";
 
 function getLocaleFromCookie() {
   if (typeof document === "undefined") return "en";
@@ -574,6 +575,9 @@ export default function ProfilePage() {
     }
   };
 
+  const STRATEGY_OPTIONS = COMBO_STRATEGIES.map((value) => ({ value, label: STRATEGY_LABELS[value] }));
+  const currentComboStrategy = settings.comboStrategy || "fallback";
+
   return (
     <div className="max-w-2xl mx-auto px-4 sm:px-0">
       <div className="flex flex-col gap-6">
@@ -959,23 +963,33 @@ export default function ProfilePage() {
               </div>
             )}
 
-            {/* Combo Round Robin */}
-            <div className="flex items-start sm:items-center justify-between gap-4 pt-4 border-t border-border/50">
+            {/* Default Combo Strategy */}
+            <div className="flex flex-col sm:flex-row sm:items-stretch sm:justify-between gap-2 pt-4 border-t border-border/50">
               <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm sm:text-base">Combo Round Robin</p>
+                <p className="font-medium text-sm sm:text-base">Default Combo Strategy</p>
                 <p className="text-xs sm:text-sm text-text-muted">
-                  Cycle through providers in combos instead of always starting with first
+                  How models inside combos are selected by default
                 </p>
               </div>
-              <Toggle
-                checked={settings.comboStrategy === "round-robin"}
-                onChange={() => updateComboStrategy(settings.comboStrategy === "round-robin" ? "fallback" : "round-robin")}
+              <Select
+                options={STRATEGY_OPTIONS}
+                value={currentComboStrategy}
+                onChange={(e) => updateComboStrategy(e.target.value)}
+                selectClassName="w-full sm:w-[220px]"
                 disabled={loading}
               />
             </div>
 
+            {/* Race strategy warning */}
+            {currentComboStrategy === "race" && (
+              <div className="mt-3 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400 flex items-start gap-2">
+                <span className="material-symbols-outlined text-[15px] shrink-0">warning</span>
+                <span>⚠️ Peringatan: Strategi race mengirim prompt ke SEMUA provider sekaligus. Biaya token meningkat Nx hingga semua provider menjawab.</span>
+              </div>
+            )}
+
             {/* Combo Sticky Round Robin Limit */}
-            {settings.comboStrategy === "round-robin" && (
+            {currentComboStrategy === "round-robin" && (
               <div className="flex items-center justify-between pt-2 border-t border-border/50">
                 <div>
                   <p className="font-medium">Combo Sticky Limit</p>
@@ -999,9 +1013,9 @@ export default function ProfilePage() {
               {settings.fallbackStrategy === "round-robin"
                 ? `Currently distributing requests across all available accounts with ${settings.stickyRoundRobinLimit || 3} calls per account.`
                 : "Currently using accounts in priority order (Fill First)."}
-              {settings.comboStrategy === "round-robin"
+              {currentComboStrategy === "round-robin"
                 ? ` Combos rotate after ${settings.comboStickyRoundRobinLimit || 1} call${(settings.comboStickyRoundRobinLimit || 1) === 1 ? "" : "s"} per model.`
-                : " Combos always start with their first model."}
+                : ` ${STRATEGY_LABELS[currentComboStrategy] || currentComboStrategy}.`}
             </p>
           </div>
         </Card>

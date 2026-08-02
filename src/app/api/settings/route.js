@@ -76,7 +76,15 @@ export async function PATCH(request) {
       }
     }
 
-    const settings = await updateSettings(body);
+    let settings;
+    try {
+      settings = await updateSettings(body);
+    } catch (err) {
+      if (err instanceof TypeError) {
+        return NextResponse.json({ error: err.message }, { status: 400 });
+      }
+      throw err;
+    }
 
     // Apply outbound proxy settings immediately (no restart required)
     if (

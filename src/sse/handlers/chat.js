@@ -16,7 +16,11 @@ import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
 import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
-import { handleComboChat, handleFusionChat } from "open-sse/services/combo.js";
+import {
+  handleComboChat, handleFusionChat, handleRaceChat,
+  pickSessionAffinity, pickLeastUsed, evictSessionModel,
+} from "open-sse/services/combo.js";
+import { getProviderUsage } from "@/lib/usageDb";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
@@ -112,6 +116,58 @@ export async function handleChat(request, clientRawRequest = null) {
         comboName: modelStr,
         judgeModel: comboStrategies[modelStr]?.judgeModel,
         tuning: comboStrategies[modelStr]?.fusionTuning,
+      });
+    }
+
+    if (comboStrategy === "race") {
+      // Wrapper race — pola identik dengan fusion: strip tools dari clientRawRequest
+      // juga, bukan hanya dari body (race memanggil isPanel=true).
+      const raceHandleSingleModel = (b, m, isPanel) => {
+        let cleanRawReq = clientRawRequest;
+        if (isPanel && clientRawRequest) {
+          const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
+          cleanRawReq = { ...clientRawRequest, body: cleanBody };
+        }
+        return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+      };
+      log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: race)`);
+      return handleRaceChat({ body, models: comboModels, handleSingleModel: raceHandleSingleModel, log, comboName: modelStr });
+    }
+
+    if (comboStrategy === "session-affinity" || comboStrategy === "least-used") {
+      const usage = await getProviderUsage();
+      const sid = comboStrategy === "session-affinity"
+        ? (request.headers.get("x-session-id") || request.headers.get("mcp-session-id") || body.sessionId)
+        : null;
+      const rotated = comboStrategy === "session-affinity"
+        ? pickSessionAffinity(comboModels, modelStr, sid, usage)
+        : pickLeastUsed(comboModels, usage);
+
+      // Evict pin sticky HANYA pada kegagalan NON-transient:
+      // 5xx (502/503/504) → transient (cooldown di combo.js); 429/408 → backoff.
+      // Evict hanya 4xx selain 408/429 (401/403/404/410/dst — error definitif).
+      const stickyWrapper = (b, m) => {
+        const inner = handleSingleModelChat(b, m, clientRawRequest, request, apiKey);
+        return inner.then((res) => {
+          if (sid && m === rotated[0] && !res.ok) {
+            const s = res.status;
+            if (s >= 400 && s !== 408 && s !== 429 && s < 500) {
+              evictSessionModel(modelStr, sid); // non-transient 4xx → re-pin next request
+            }
+          }
+          return res;
+        });
+      };
+
+      log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy})`);
+      return handleComboChat({
+        body,
+        models: rotated,
+        comboStrategy: "fallback", // list sudah encode pilihan — JANGAN re-rotate
+        handleSingleModel: stickyWrapper,
+        log,
+        comboName: modelStr,
+        comboStickyLimit: 1,
       });
     }
 

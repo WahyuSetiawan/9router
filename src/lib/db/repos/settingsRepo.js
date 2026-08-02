@@ -1,5 +1,6 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { COMBO_STRATEGIES } from "open-sse/config/comboStrategies.js";
 
 const DEFAULT_MITM_ROUTER_BASE = "http://localhost:20128";
 const DEFAULT_HEADROOM_URL = process.env.HEADROOM_URL || "http://localhost:8787";
@@ -108,6 +109,22 @@ export async function getSettings() {
 
 // Atomic read-merge-write inside transaction (prevents losing concurrent updates)
 export async function updateSettings(updates) {
+  // Validate comboStrategy & per-combo fallbackStrategy against enum
+  const isValidComboStrategy = (v) => COMBO_STRATEGIES.includes(v);
+
+  for (const [k, v] of Object.entries(updates)) {
+    if (k === "comboStrategy" && !isValidComboStrategy(v)) {
+      throw new TypeError(`Invalid comboStrategy "${v}" — allowed: ${COMBO_STRATEGIES.join(", ")}`);
+    }
+    if (k === "comboStrategies") {
+      for (const [name, cfg] of Object.entries(v || {})) {
+        if (cfg?.fallbackStrategy && !isValidComboStrategy(cfg.fallbackStrategy)) {
+          throw new TypeError(`Combo "${name}" has invalid fallbackStrategy "${cfg.fallbackStrategy}"`);
+        }
+      }
+    }
+  }
+
   const db = await getAdapter();
   let next;
   db.transaction(() => {

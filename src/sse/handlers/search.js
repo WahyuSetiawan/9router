@@ -13,6 +13,7 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo.js";
+import { normalizeComboStrategy, NON_CHAT_COMBO_STRATEGIES } from "open-sse/config/comboStrategies.js";
 
 /**
  * Handle web search request for the SSE/Next.js server.
@@ -73,7 +74,11 @@ export async function handleSearch(request) {
   const comboModels = getComboModelsFromData(providerInput, combos);
   if (comboModels) {
     const comboStrategies = settings.comboStrategies || {};
-    const comboStrategy = comboStrategies[providerInput]?.fallbackStrategy || settings.comboStrategy || "fallback";
+    const comboStrategy = normalizeComboStrategy(
+      comboStrategies[providerInput]?.fallbackStrategy || settings.comboStrategy || "fallback",
+      NON_CHAT_COMBO_STRATEGIES,
+      log,
+    );
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
     log.info("SEARCH", `Combo "${providerInput}" with ${comboModels.length} providers (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
     return handleComboChat({

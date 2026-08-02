@@ -739,6 +739,37 @@ function formatLogDate(date = new Date()) {
 // No-op: request log is now derived from usageHistory table on read.
 export async function appendRequestLog() {}
 
+/**
+ * Get provider/model usage counts aggregated over recent time window.
+ * Used by session-affinity and least-used combo strategies.
+ * @param {number} sinceHours - Hours to look back (default: 24)
+ * @returns {Promise<Object<string, number>>} - Map of "provider/model" → requestCount
+ */
+let _providerUsageCache = { data: null, ts: 0 };
+const PROVIDER_USAGE_TTL_MS = 5000;
+
+export async function getProviderUsage(sinceHours = 24) {
+  const now = Date.now();
+  if (_providerUsageCache.data && now - _providerUsageCache.ts < PROVIDER_USAGE_TTL_MS) {
+    return _providerUsageCache.data;
+  }
+  const db = await getAdapter();
+  const cutoff = new Date(now - sinceHours * 3_600_000).toISOString();
+  const rows = db.all(
+    `SELECT provider, model, COUNT(*) AS requests FROM usageHistory
+     WHERE timestamp >= ? AND provider IS NOT NULL AND model IS NOT NULL GROUP BY provider, model`,
+    [cutoff],
+  );
+  const out = {};
+  for (const r of rows) {
+    if (r.provider && r.model) {
+      out[`${r.provider}/${r.model}`] = r.requests;
+    }
+  }
+  _providerUsageCache = { data: out, ts: now };
+  return out;
+}
+
 export async function getRecentLogs(limit = 200) {
   try {
     const db = await getAdapter();
