@@ -3,12 +3,12 @@ import { getJudgmentsByPreset, createJudgment, getPresetById } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
-// GET /api/model-presets/[presetId]/judgments — list judgments for a preset
+// GET /api/model-presets/[id]/judgments — list judgments for a preset
 export async function GET(request, { params }) {
   try {
-    const { presetId } = await params;
+    const { id } = await params;
 
-    const preset = await getPresetById(presetId);
+    const preset = await getPresetById(id);
     if (!preset) {
       return NextResponse.json({ error: "Preset not found" }, { status: 404 });
     }
@@ -17,7 +17,7 @@ export async function GET(request, { params }) {
     const accepted = searchParams.get("accepted");
     const provider = searchParams.get("provider");
 
-    let judgments = await getJudgmentsByPreset(presetId);
+    let judgments = await getJudgmentsByPreset(id);
 
     // Optional server-side filtering
     if (accepted !== null) {
@@ -35,12 +35,12 @@ export async function GET(request, { params }) {
   }
 }
 
-// POST /api/model-presets/[presetId]/judgments — create a judgment
+// POST /api/model-presets/[id]/judgments — create a judgment
 export async function POST(request, { params }) {
   try {
-    const { presetId } = await params;
+    const { id } = await params;
 
-    const preset = await getPresetById(presetId);
+    const preset = await getPresetById(id);
     if (!preset) {
       return NextResponse.json({ error: "Preset not found" }, { status: 404 });
     }
@@ -53,7 +53,7 @@ export async function POST(request, { params }) {
     }
 
     const judgment = await createJudgment({
-      preset_id: presetId,
+      preset_id: id,
       model_id: model_id.trim(),
       provider: provider || null,
       reasoning: reasoning || null,

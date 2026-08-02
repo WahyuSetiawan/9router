@@ -21,13 +21,6 @@ const nextConfig = {
   outputFileTracingExcludes: {
     "*": ["./gitbook/**/*"]
   },
-  outputFileTracingIncludes: {
-    "*": [
-      "**/better-sqlite3/**/*.node",
-      "**/sql.js/**/*.wasm",
-      "**/sql.js/dist/**"
-    ]
-  },
   images: {
     unoptimized: true
   },

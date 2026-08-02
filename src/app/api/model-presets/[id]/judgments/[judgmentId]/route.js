@@ -3,13 +3,13 @@ import { updateJudgment, deleteJudgment } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
-// GET /api/model-presets/[presetId]/judgments/[id] — single judgment
+// GET /api/model-presets/[id]/judgments/[judgmentId] — single judgment
 export async function GET(request, { params }) {
   try {
-    const { id } = await params;
+    const { judgmentId } = await params;
 
     const { getJudgmentById } = await import("@/lib/db/repos/modelJudgmentsRepo.js");
-    const judgment = await getJudgmentById(id);
+    const judgment = await getJudgmentById(judgmentId);
 
     if (!judgment) {
       return NextResponse.json({ error: "Judgment not found" }, { status: 404 });
@@ -22,10 +22,10 @@ export async function GET(request, { params }) {
   }
 }
 
-// PUT /api/model-presets/[presetId]/judgments/[id] — update judgment
+// PUT /api/model-presets/[id]/judgments/[judgmentId] — update judgment
 export async function PUT(request, { params }) {
   try {
-    const { id } = await params;
+    const { judgmentId } = await params;
     const body = await request.json();
 
     if (body.model_id !== undefined && !body.model_id.trim()) {
@@ -39,7 +39,7 @@ export async function PUT(request, { params }) {
     if (body.score !== undefined) data.score = body.score;
     if (body.accepted !== undefined) data.accepted = body.accepted;
 
-    const judgment = await updateJudgment(id, data);
+    const judgment = await updateJudgment(judgmentId, data);
 
     if (!judgment) {
       return NextResponse.json({ error: "Judgment not found" }, { status: 404 });
@@ -52,12 +52,12 @@ export async function PUT(request, { params }) {
   }
 }
 
-// DELETE /api/model-presets/[presetId]/judgments/[id] — delete judgment
+// DELETE /api/model-presets/[id]/judgments/[judgmentId] — delete judgment
 export async function DELETE(request, { params }) {
   try {
-    const { id } = await params;
+    const { judgmentId } = await params;
 
-    const success = await deleteJudgment(id);
+    const success = await deleteJudgment(judgmentId);
 
     if (!success) {
       return NextResponse.json({ error: "Judgment not found" }, { status: 404 });
